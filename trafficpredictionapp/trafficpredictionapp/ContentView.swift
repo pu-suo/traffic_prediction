@@ -2,6 +2,7 @@ import SwiftUI
 import MapKit
 
 struct ContentView: View {
+    // MARK: - Properties
     @State private var showTimePicker = false
     @State private var showDatePicker = false
     @State private var selectedTime = Date()
@@ -9,19 +10,23 @@ struct ContentView: View {
     @State private var timeText = ""
     @State private var dateText = ""
     @State private var selectedAmPm = "PM"
+    @State private var isLoading = false
+    @State private var errorMessage: String?
+    @State private var predictionResult: Double?
     
     @State private var region = MKCoordinateRegion(
-        center: CLLocationCoordinate2D(latitude: 33.7490, longitude: -84.3880),
-        span: MKCoordinateSpan(latitudeDelta: 0.02, longitudeDelta: 0.02)
+        center: CLLocationCoordinate2D(latitude: 33.7654, longitude: -84.3985),
+        span: MKCoordinateSpan(latitudeDelta: 0.03, longitudeDelta: 0.03)
     )
     
     let markers = [
-        Place(name: "Location A", coordinate: CLLocationCoordinate2D(latitude: 33.7490, longitude: -84.3880)),
-        Place(name: "Location B", coordinate: CLLocationCoordinate2D(latitude: 33.7580, longitude: -84.3920))
+        Place(name: "Georgia Tech", coordinate: CLLocationCoordinate2D(latitude: 33.7756, longitude: -84.3963)),
+        Place(name: "Mercedes-Benz Stadium", coordinate: CLLocationCoordinate2D(latitude: 33.7553, longitude: -84.4006))
     ]
     
     private let amPmOptions = ["AM", "PM"]
     
+    // MARK: - Time and Date Intervals
     private let timeIntervals: [Date] = {
         let calendar = Calendar.current
         let currentDate = Date()
@@ -53,6 +58,7 @@ struct ContentView: View {
         return dates
     }()
     
+    // MARK: - Validation Methods
     private func validateTime(_ time: String) -> Bool {
         let timeRegex = #"^(1[0-2]|0?[1-9]):([0-5][0-9])$"#
         let timePredicate = NSPredicate(format: "SELF MATCHES %@", timeRegex)
@@ -71,16 +77,46 @@ struct ContentView: View {
         return formatter.date(from: "\(timeStr) \(ampm)")
     }
     
+    // MARK: - Network Request
+    private func fetchPrediction() {
+        guard validateTime(timeText) && validateDate(dateText) else {
+            errorMessage = "Please enter valid time (HH:MM) and date (MM/DD)"
+            return
+        }
+        
+        Task {
+            isLoading = true
+            do {
+                let prediction = try await PredictionNetworkService.shared.fetchPrediction(
+                    time: timeText,
+                    date: dateText,
+                    amPm: selectedAmPm,
+                    origin: markers[0].coordinate,
+                    destination: markers[1].coordinate
+                )
+                predictionResult = prediction.predictedVolume
+            } catch {
+                if let networkError = error as? NetworkError {
+                    errorMessage = networkError.errorDescription
+                } else {
+                    errorMessage = error.localizedDescription
+                }
+            }
+            isLoading = false
+        }
+    }
+    
+    // MARK: - Body
     var body: some View {
         GeometryReader { geometry in
             VStack(spacing: 0) {
-                // Map takes remaining space
+                // Map View
                 Map(coordinateRegion: $region, annotationItems: markers) { place in
                     MapMarker(coordinate: place.coordinate, tint: .red)
                 }
-                .frame(height: geometry.size.height - 278) // Subtract form height from total height
+                .frame(height: geometry.size.height - 278)
                 
-                // Form section with fixed height
+                // Form Section
                 VStack(spacing: 0) {
                     VStack(alignment: .leading, spacing: 16) {
                         HStack {
@@ -91,7 +127,7 @@ struct ContentView: View {
                                 .foregroundColor(.blue)
                         }
                         
-                        // Time Section
+                        // Time Selection
                         HStack {
                             Button(action: {
                                 showTimePicker.toggle()
@@ -103,13 +139,10 @@ struct ContentView: View {
                                     TextField("Enter time (HH:MM)", text: $timeText)
                                         .keyboardType(.numberPad)
                                         .textFieldStyle(RoundedBorderTextFieldStyle())
-                                        .frame(maxWidth: .infinity)
                                     
                                     Menu {
                                         ForEach(amPmOptions, id: \.self) { option in
-                                            Button(action: {
-                                                selectedAmPm = option
-                                            }) {
+                                            Button(action: { selectedAmPm = option }) {
                                                 Text(option)
                                             }
                                         }
@@ -133,7 +166,7 @@ struct ContentView: View {
                             }
                         }
                         
-                        // Date Section
+                        // Date Selection
                         HStack {
                             Button(action: {
                                 showDatePicker.toggle()
@@ -145,15 +178,6 @@ struct ContentView: View {
                                     TextField("Enter date (MM/DD)", text: $dateText)
                                         .keyboardType(.numberPad)
                                         .textFieldStyle(RoundedBorderTextFieldStyle())
-                                        .onChange(of: dateText) { newValue in
-                                            if validateDate(newValue) {
-                                                let formatter = DateFormatter()
-                                                formatter.dateFormat = "MM/dd"
-                                                if let date = formatter.date(from: newValue) {
-                                                    selectedDate = date
-                                                }
-                                            }
-                                        }
                                     Spacer()
                                     HStack(spacing: 20) {
                                         Image(systemName: "chevron.left")
@@ -167,37 +191,52 @@ struct ContentView: View {
                             }
                         }
                         
-                        Button(action: {
-                            if validateTime(timeText) && validateDate(dateText) {
-                                print("Time entered: \(timeText) \(selectedAmPm)")
-                                print("Date entered: \(dateText)")
-                            } else {
-                                print("Invalid time or date format")
+                        // Submit Button
+                        Button(action: fetchPrediction) {
+                            HStack {
+                                if isLoading {
+                                    ProgressView()
+                                        .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                                }
+                                Text(isLoading ? "Loading..." : "Get Prediction")
                             }
-                        }) {
-                            Text("Submit")
-                                .frame(maxWidth: .infinity)
-                                .padding()
-                                .background(Color.blue)
-                                .foregroundColor(.white)
-                                .cornerRadius(8)
+                            .frame(maxWidth: .infinity)
+                            .padding()
+                            .background(isLoading ? Color.gray : Color.blue)
+                            .foregroundColor(.white)
+                            .cornerRadius(8)
                         }
-                        .padding(.top, 20)
+                        .disabled(isLoading)
+                        
+                        if let result = predictionResult {
+                            Text("Predicted Volume: \(String(format: "%.2f", result))")
+                                .font(.headline)
+                                .padding(.top, 8)
+                        }
                     }
                     .padding()
                 }
                 .background(Color(.systemGroupedBackground))
-                .frame(height: 250) // Fixed height for form
+                .frame(height: 250)
             }
         }
         .ignoresSafeArea(.all, edges: .top)
+        .alert("Error", isPresented: Binding(
+            get: { errorMessage != nil },
+            set: { if !$0 { errorMessage = nil } }
+        )) {
+            Text(errorMessage ?? "Unknown error occurred")
+            Button("OK", role: .cancel) {}
+        }
         .sheet(isPresented: $showTimePicker) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(timeIntervals, id: \.self) { time in
                         Button(action: {
                             selectedTime = time
-                            timeText = timeFormatter.string(from: time)
+                            let formatter = DateFormatter()
+                            formatter.timeStyle = .short
+                            timeText = formatter.string(from: time)
                             selectedAmPm = Calendar.current.component(.hour, from: time) >= 12 ? "PM" : "AM"
                             showTimePicker = false
                         }) {
@@ -236,6 +275,7 @@ struct ContentView: View {
         }
     }
     
+    // MARK: - Formatters
     private var timeFormatter: DateFormatter {
         let formatter = DateFormatter()
         formatter.timeStyle = .short
@@ -249,12 +289,14 @@ struct ContentView: View {
     }
 }
 
+// MARK: - Supporting Types
 struct Place: Identifiable {
     let id = UUID()
     let name: String
     let coordinate: CLLocationCoordinate2D
 }
 
+// MARK: - Preview
 struct ContentView_Previews: PreviewProvider {
     static var previews: some View {
         ContentView()
