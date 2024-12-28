@@ -11,12 +11,14 @@ struct ContentView: View {
     @State private var dateText = ""
     @State private var selectedAmPm = "PM"
     @State private var isLoading = false
-    @State private var errorMessage: String?
-    @State private var predictionResult: Double?
+    @State private var showAlert = false
+    @State private var alertMessage = ""
+    @State private var alertTitle = ""
+    @State private var trafficSignals: [TrafficSignal] = []
     
     @State private var region = MKCoordinateRegion(
-        center: CLLocationCoordinate2D(latitude: 33.7654, longitude: -84.3985),
-        span: MKCoordinateSpan(latitudeDelta: 0.03, longitudeDelta: 0.03)
+        center: CLLocationCoordinate2D(latitude: 33.7490, longitude: -84.3880),
+        span: MKCoordinateSpan(latitudeDelta: 0.1, longitudeDelta: 0.1)
     )
     
     let markers = [
@@ -25,6 +27,11 @@ struct ContentView: View {
     ]
     
     private let amPmOptions = ["AM", "PM"]
+    
+    // Initialize traffic signals
+    init() {
+        _trafficSignals = State(initialValue: SignalDataManager.loadSignals())
+    }
     
     // MARK: - Time and Date Intervals
     private let timeIntervals: [Date] = {
@@ -80,27 +87,47 @@ struct ContentView: View {
     // MARK: - Network Request
     private func fetchPrediction() {
         guard validateTime(timeText) && validateDate(dateText) else {
-            errorMessage = "Please enter valid time (HH:MM) and date (MM/DD)"
+            alertTitle = "Error"
+            alertMessage = "Please enter valid time (HH:MM) and date (MM/DD)"
+            showAlert = true
             return
         }
         
         Task {
             isLoading = true
             do {
-                let prediction = try await PredictionNetworkService.shared.fetchPrediction(
+                let response = try await PredictionNetworkService.shared.fetchPrediction(
                     time: timeText,
                     date: dateText,
                     amPm: selectedAmPm,
                     origin: markers[0].coordinate,
                     destination: markers[1].coordinate
                 )
-                predictionResult = prediction.predictedVolume
-            } catch {
-                if let networkError = error as? NetworkError {
-                    errorMessage = networkError.errorDescription
-                } else {
-                    errorMessage = error.localizedDescription
+                
+                if response.status == "success" {
+                    alertTitle = "Success"
+                    alertMessage = """
+                    Data processing completed
+                    
+                    Start Time: \(timeText) \(selectedAmPm)
+                    End Time: \(dateText)
+                    Interval: \(response.parameters.interval_minutes) minutes
+                    """
+                    showAlert = true
                 }
+                
+            } catch NetworkError.requestTimeout {
+                alertTitle = "Error"
+                alertMessage = "Request failed: The request timed out."
+                showAlert = true
+            } catch let error as NetworkError {
+                alertTitle = "Error"
+                alertMessage = error.errorDescription ?? "An unknown error occurred"
+                showAlert = true
+            } catch {
+                alertTitle = "Error"
+                alertMessage = error.localizedDescription
+                showAlert = true
             }
             isLoading = false
         }
@@ -110,9 +137,41 @@ struct ContentView: View {
     var body: some View {
         GeometryReader { geometry in
             VStack(spacing: 0) {
-                // Map View
-                Map(coordinateRegion: $region, annotationItems: markers) { place in
-                    MapMarker(coordinate: place.coordinate, tint: .red)
+                // Map View with both markers and traffic signals
+                ZStack {
+                    Map(coordinateRegion: $region, annotationItems: markers) { place in
+                        MapMarker(coordinate: place.coordinate, tint: .red)
+                    }
+                    .overlay(
+                        Map(coordinateRegion: $region, annotationItems: trafficSignals) { signal in
+                            MapMarker(coordinate: signal.coordinate, tint: .green)
+                        }
+                    )
+                    
+                    // Optional: Add a legend
+                    VStack {
+                        Spacer()
+                        HStack {
+                            // Legend items
+                            HStack {
+                                Circle()
+                                    .fill(.red)
+                                    .frame(width: 10, height: 10)
+                                Text("Route Points")
+                                    .font(.caption)
+                                Circle()
+                                    .fill(.green)
+                                    .frame(width: 10, height: 10)
+                                Text("Traffic Signals")
+                                    .font(.caption)
+                            }
+                            .padding(8)
+                            .background(.thinMaterial)
+                            .cornerRadius(8)
+                            Spacer()
+                        }
+                        .padding()
+                    }
                 }
                 .frame(height: geometry.size.height - 278)
                 
@@ -207,12 +266,6 @@ struct ContentView: View {
                             .cornerRadius(8)
                         }
                         .disabled(isLoading)
-                        
-                        if let result = predictionResult {
-                            Text("Predicted Volume: \(String(format: "%.2f", result))")
-                                .font(.headline)
-                                .padding(.top, 8)
-                        }
                     }
                     .padding()
                 }
@@ -221,12 +274,10 @@ struct ContentView: View {
             }
         }
         .ignoresSafeArea(.all, edges: .top)
-        .alert("Error", isPresented: Binding(
-            get: { errorMessage != nil },
-            set: { if !$0 { errorMessage = nil } }
-        )) {
-            Text(errorMessage ?? "Unknown error occurred")
+        .alert(alertTitle, isPresented: $showAlert) {
             Button("OK", role: .cancel) {}
+        } message: {
+            Text(alertMessage)
         }
         .sheet(isPresented: $showTimePicker) {
             ScrollView {
@@ -290,11 +341,17 @@ struct ContentView: View {
 }
 
 // MARK: - Supporting Types
-struct Place: Identifiable {
+protocol MapItem: Identifiable {
+    var coordinate: CLLocationCoordinate2D { get }
+}
+
+struct Place: MapItem {
     let id = UUID()
     let name: String
     let coordinate: CLLocationCoordinate2D
 }
+
+extension TrafficSignal: MapItem {}
 
 // MARK: - Preview
 struct ContentView_Previews: PreviewProvider {
