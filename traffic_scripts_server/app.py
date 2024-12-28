@@ -8,6 +8,7 @@ from functools import wraps
 import traceback
 import logging
 from datetime import datetime
+from traffic_model_training import main as train_model
 
 app = Flask(__name__)
 
@@ -112,11 +113,56 @@ def run_fetch_volume():
         'status': 'success',
         'message': 'Data processing completed',
         'parameters': {
-            'start_time': data['start_time'],  # Return the original input format
-            'end_time': data['end_time'],      # Return the original input format
+            'start_time': data['start_time'],
+            'end_time': data['end_time'],
             'interval_minutes': interval_minutes
         }
     })
+
+@app.route("/training", methods=['POST'])
+@handle_errors
+def run_training():
+    """
+    Endpoint to trigger model training
+    Accepts optional JSON body with parameters:
+    {
+        "data_file": "path/to/traffic_data_prepared.csv",  # optional
+        "save_model_as": "model_name.joblib"  # optional
+    }
+    Returns JSON response with training results or error message
+    """
+    try:
+        # Try to get JSON data if provided, but don't require it
+        try:
+            data = request.get_json(silent=True) or {}
+        except:
+            data = {}
+        
+        # Get the model and metrics from the training
+        logging.info("Starting model training...")
+        model, metrics = train_model()
+        
+        # Format the metrics for JSON response
+        formatted_metrics = {
+            'rmse': float(metrics['RMSE']),
+            'mae': float(metrics['MAE']),
+            'r2': float(metrics['R2'])
+        }
+        
+        return jsonify({
+            'status': 'success',
+            'message': 'Model training completed successfully',
+            'metrics': formatted_metrics,
+            'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        })
+        
+    except Exception as e:
+        logging.error(f"Error during model training: {str(e)}")
+        return jsonify({
+            'status': 'error',
+            'message': str(e),
+            'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        }), 500
 
 if __name__ == "__main__":
     print("Starting Flask server...")

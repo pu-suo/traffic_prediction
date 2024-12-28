@@ -10,12 +10,14 @@ struct PredictionRequest: Codable {
 }
 
 struct PredictionResponse: Codable {
-    let predictedVolume: Double
-    let message: String?
+    let status: String
+    let message: String
+    let parameters: Parameters
     
-    enum CodingKeys: String, CodingKey {
-        case predictedVolume = "predicted_volume"
-        case message
+    struct Parameters: Codable {
+        let start_time: String
+        let end_time: String
+        let interval_minutes: Int
     }
 }
 
@@ -24,10 +26,11 @@ enum NetworkError: LocalizedError {
     case invalidURL
     case invalidData
     case encodingError
-    case requestFailed(Error)
+    case requestFailed(String)
     case invalidResponse
     case serverError(String)
     case invalidDateFormat
+    case requestTimeout
     
     var errorDescription: String? {
         switch self {
@@ -37,14 +40,16 @@ enum NetworkError: LocalizedError {
             return "Invalid data received from server"
         case .encodingError:
             return "Error encoding request data"
-        case .requestFailed(let error):
-            return "Request failed: \(error.localizedDescription)"
+        case .requestFailed(let message):
+            return message
         case .invalidResponse:
             return "Invalid response from server"
         case .serverError(let message):
             return message
         case .invalidDateFormat:
             return "Invalid date or time format"
+        case .requestTimeout:
+            return "Request failed: The request timed out."
         }
     }
 }
@@ -77,7 +82,6 @@ final class PredictionNetworkService {
             return nil
         }
         
-        // Add 15 minutes
         let endDate = Calendar.current.date(byAdding: .minute, value: 15, to: startDate)
         return dateFormatter.string(from: endDate!)
     }
@@ -90,10 +94,8 @@ final class PredictionNetworkService {
         origin: CLLocationCoordinate2D,
         destination: CLLocationCoordinate2D
     ) async throws -> PredictionResponse {
-        // Format start time
         let startTime = formatDateTime(date, time: time, amPm: amPm)
         
-        // Calculate end time (start time + 15 minutes)
         guard let endTime = calculateEndTime(date: date, time: time, amPm: amPm) else {
             throw NetworkError.invalidDateFormat
         }
@@ -112,11 +114,11 @@ final class PredictionNetworkService {
     }
     
     // MARK: - Private Methods
-    private func performRequest<T: Codable, U: Codable>(
+    private func performRequest<T: Codable>(
         endpoint: String,
         method: String,
         body: T
-    ) async throws -> U {
+    ) async throws -> PredictionResponse {
         guard let url = URL(string: baseURL + endpoint) else {
             throw NetworkError.invalidURL
         }
@@ -128,11 +130,6 @@ final class PredictionNetworkService {
         do {
             let encoder = JSONEncoder()
             request.httpBody = try encoder.encode(body)
-            
-            // Debug: Print request body
-            if let jsonString = String(data: request.httpBody!, encoding: .utf8) {
-                print("Request body: \(jsonString)")
-            }
         } catch {
             throw NetworkError.encodingError
         }
@@ -144,23 +141,36 @@ final class PredictionNetworkService {
                 throw NetworkError.invalidResponse
             }
             
+            // Handle timeout specifically
+            if httpResponse.statusCode == URLError.timedOut.rawValue {
+                throw NetworkError.requestTimeout
+            }
+            
+            // Check for timeout in response data
+            if let responseString = String(data: data, encoding: .utf8),
+               responseString.contains("timed out") {
+                throw NetworkError.requestTimeout
+            }
+            
+            // Handle non-200 responses
             if !(200...299).contains(httpResponse.statusCode) {
                 if let errorResponse = try? JSONDecoder().decode([String: String].self, from: data),
                    let errorMessage = errorResponse["error"] {
                     throw NetworkError.serverError(errorMessage)
                 }
-                throw NetworkError.invalidResponse
+                throw NetworkError.requestFailed("Request failed with status code: \(httpResponse.statusCode)")
             }
             
+            // Decode successful response
             let decoder = JSONDecoder()
-            return try decoder.decode(U.self, from: data)
+            return try decoder.decode(PredictionResponse.self, from: data)
+            
         } catch let error as NetworkError {
             throw error
-        } catch let error as DecodingError {
-            print("Decoding error: \(error)")
-            throw NetworkError.invalidData
+        } catch let error as URLError where error.code == .timedOut {
+            throw NetworkError.requestTimeout
         } catch {
-            throw NetworkError.requestFailed(error)
+            throw NetworkError.requestFailed("Request failed: \(error.localizedDescription)")
         }
     }
 }
