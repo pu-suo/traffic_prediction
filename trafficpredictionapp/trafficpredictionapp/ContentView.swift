@@ -1,6 +1,87 @@
 import SwiftUI
 import MapKit
 
+// MARK: - Supporting Types
+enum MapItemType {
+    case place
+    case signal
+}
+
+struct MapAnnotationItem: Identifiable {
+    let id: String
+    let coordinate: CLLocationCoordinate2D
+    let type: MapItemType
+    let name: String?
+    
+    init(place: Place) {
+        self.id = place.id.uuidString
+        self.coordinate = place.coordinate
+        self.type = .place
+        self.name = place.name
+    }
+    
+    init(signal: TrafficSignal) {
+        self.id = String(signal.id)
+        self.coordinate = signal.coordinate
+        self.type = .signal
+        self.name = nil
+    }
+}
+
+struct Place {
+    let id = UUID()
+    let name: String
+    let coordinate: CLLocationCoordinate2D
+}
+
+// Custom view for traffic signal markers with pop-up
+struct SignalAnnotationView: View {
+    let signalColor: Color = .green
+    let signalId: Int
+    let isSelected: Bool
+    let onTap: () -> Void
+    
+    var body: some View {
+        Button(action: onTap) {
+            ZStack {
+                // Outer glowing circle
+                Circle()
+                    .fill(signalColor.opacity(0.3))
+                    .frame(width: 100, height: 100)
+                
+                // Inner circle
+                Circle()
+                    .fill(signalColor)
+                    .frame(width: 24, height: 24)
+                
+                // Center dot
+                Circle()
+                    .fill(.white)
+                    .frame(width: 8, height: 8)
+            }
+        }
+        .overlay(alignment: .top) {
+            if isSelected {
+                VStack(spacing: 4) {
+                    Text("Signal ID")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                    Text("\(signalId)")
+                        .font(.caption.bold())
+                        .foregroundColor(.primary)
+                }
+                .padding(8)
+                .background(
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(.thinMaterial)
+                        .shadow(radius: 2)
+                )
+                .offset(y: -50)
+            }
+        }
+    }
+}
+
 struct ContentView: View {
     // MARK: - Properties
     @State private var showTimePicker = false
@@ -15,7 +96,7 @@ struct ContentView: View {
     @State private var alertMessage = ""
     @State private var alertTitle = ""
     @State private var trafficSignals: [TrafficSignal] = []
-    
+    @State private var selectedSignalId: Int? = nil
     @State private var region = MKCoordinateRegion(
         center: CLLocationCoordinate2D(latitude: 33.7490, longitude: -84.3880),
         span: MKCoordinateSpan(latitudeDelta: 0.1, longitudeDelta: 0.1)
@@ -30,7 +111,14 @@ struct ContentView: View {
     
     // Initialize traffic signals
     init() {
-        _trafficSignals = State(initialValue: SignalDataManager.loadSignals())
+        _trafficSignals = State(initialValue: SignalDataModel.loadSignals())
+    }
+    
+    // Computed property for map annotations
+    private var annotationItems: [MapAnnotationItem] {
+        let placeItems = markers.map { MapAnnotationItem(place: $0) }
+        let signalItems = trafficSignals.map { MapAnnotationItem(signal: $0) }
+        return placeItems + signalItems
     }
     
     // MARK: - Time and Date Intervals
@@ -78,12 +166,6 @@ struct ContentView: View {
         return datePredicate.evaluate(with: date)
     }
     
-    private func timeStringToDate(_ timeStr: String, ampm: String) -> Date? {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "h:mm a"
-        return formatter.date(from: "\(timeStr) \(ampm)")
-    }
-    
     // MARK: - Network Request
     private func fetchPrediction() {
         guard validateTime(timeText) && validateDate(dateText) else {
@@ -115,7 +197,6 @@ struct ContentView: View {
                     """
                     showAlert = true
                 }
-                
             } catch NetworkError.requestTimeout {
                 alertTitle = "Error"
                 alertMessage = "Request failed: The request timed out."
@@ -138,21 +219,41 @@ struct ContentView: View {
         GeometryReader { geometry in
             VStack(spacing: 0) {
                 // Map View with both markers and traffic signals
-                ZStack {
-                    Map(coordinateRegion: $region, annotationItems: markers) { place in
-                        MapMarker(coordinate: place.coordinate, tint: .red)
-                    }
-                    .overlay(
-                        Map(coordinateRegion: $region, annotationItems: trafficSignals) { signal in
-                            MapMarker(coordinate: signal.coordinate, tint: .green)
+                Map(coordinateRegion: $region, annotationItems: annotationItems) { item in
+                    MapAnnotation(coordinate: item.coordinate) {
+                        switch item.type {
+                        case .place:
+                            VStack {
+                                Circle()
+                                    .fill(.red)
+                                    .frame(width: 12, height: 12)
+                                if let name = item.name {
+                                    Text(name)
+                                        .font(.caption)
+                                        .padding(4)
+                                        .background(.thinMaterial)
+                                        .cornerRadius(4)
+                                }
+                            }
+                        case .signal:
+                            let signalId = Int(item.id) ?? 0
+                            SignalAnnotationView(
+                                signalId: signalId,
+                                isSelected: selectedSignalId == signalId,
+                                onTap: {
+                                    withAnimation(.easeInOut(duration: 0.2)) {
+                                        selectedSignalId = signalId
+                                    }
+                                }
+                            )
                         }
-                    )
-                    
-                    // Optional: Add a legend
+                    }
+                }
+                .frame(height: geometry.size.height - 278)
+                .overlay(
                     VStack {
                         Spacer()
                         HStack {
-                            // Legend items
                             HStack {
                                 Circle()
                                     .fill(.red)
@@ -172,8 +273,7 @@ struct ContentView: View {
                         }
                         .padding()
                     }
-                }
-                .frame(height: geometry.size.height - 278)
+                )
                 
                 // Form Section
                 VStack(spacing: 0) {
@@ -212,13 +312,6 @@ struct ContentView: View {
                                             .background(Color(.systemGray6))
                                             .cornerRadius(8)
                                     }
-                                    
-                                    HStack(spacing: 20) {
-                                        Image(systemName: "chevron.left")
-                                            .foregroundColor(.gray)
-                                        Image(systemName: "chevron.right")
-                                            .foregroundColor(.gray)
-                                    }
                                 }
                                 .padding()
                                 .background(Color(.systemBackground))
@@ -238,12 +331,6 @@ struct ContentView: View {
                                         .keyboardType(.numberPad)
                                         .textFieldStyle(RoundedBorderTextFieldStyle())
                                     Spacer()
-                                    HStack(spacing: 20) {
-                                        Image(systemName: "chevron.left")
-                                            .foregroundColor(.gray)
-                                        Image(systemName: "chevron.right")
-                                            .foregroundColor(.gray)
-                                    }
                                 }
                                 .padding()
                                 .background(Color(.systemBackground))
@@ -285,9 +372,7 @@ struct ContentView: View {
                     ForEach(timeIntervals, id: \.self) { time in
                         Button(action: {
                             selectedTime = time
-                            let formatter = DateFormatter()
-                            formatter.timeStyle = .short
-                            timeText = formatter.string(from: time)
+                            timeText = timeFormatter.string(from: time)
                             selectedAmPm = Calendar.current.component(.hour, from: time) >= 12 ? "PM" : "AM"
                             showTimePicker = false
                         }) {
@@ -340,20 +425,7 @@ struct ContentView: View {
     }
 }
 
-// MARK: - Supporting Types
-protocol MapItem: Identifiable {
-    var coordinate: CLLocationCoordinate2D { get }
-}
-
-struct Place: MapItem {
-    let id = UUID()
-    let name: String
-    let coordinate: CLLocationCoordinate2D
-}
-
-extension TrafficSignal: MapItem {}
-
-// MARK: - Preview
+// MARK: - Preview Provider
 struct ContentView_Previews: PreviewProvider {
     static var previews: some View {
         ContentView()
