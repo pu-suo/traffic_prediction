@@ -1,12 +1,12 @@
 import Foundation
 import MapKit
 
-struct TrafficSignal: Identifiable {
+struct TrafficSignal {
     let id: Int
     let coordinate: CLLocationCoordinate2D
 }
 
-class SignalDataManager {
+class SignalDataModel {
     static func loadSignals() -> [TrafficSignal] {
         guard let path = Bundle.main.path(forResource: "atlanta_signals_long_lat", ofType: "csv") else {
             print("Failed to find CSV file")
