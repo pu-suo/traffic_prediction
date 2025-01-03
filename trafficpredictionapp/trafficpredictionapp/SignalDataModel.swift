@@ -17,7 +17,7 @@ class SignalDataModel {
             let content = try String(contentsOfFile: path, encoding: .utf8)
             let lines = content.components(separatedBy: .newlines)
             
-            // Skip header row, filter out empty lines, and limit to 30 signals
+            // Convert each line (after skipping header) into a TrafficSignal
             let allSignals = lines.dropFirst().compactMap { line -> TrafficSignal? in
                 let components = line.components(separatedBy: ",")
                 guard components.count == 3,
@@ -29,35 +29,33 @@ class SignalDataModel {
                 
                 return TrafficSignal(
                     id: id,
-                    coordinate: CLLocationCoordinate2D(
-                        latitude: latitude,
-                        longitude: longitude
-                    )
+                    coordinate: CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
                 )
             }
             
-            // Take first 30 signals around downtown Atlanta (near Georgia Tech)
-            let centerCoordinate = CLLocationCoordinate2D(latitude: 33.7756, longitude: -84.3963) // Georgia Tech coordinates
-            
-            // Sort by distance from Georgia Tech and take first 30
+            // If you want to keep them sorted by distance to Georgia Tech, but load *all* signals:
+            let centerCoordinate = CLLocationCoordinate2D(latitude: 33.7756, longitude: -84.3963)
             return allSignals
                 .sorted { signal1, signal2 in
                     let distance1 = distance(from: centerCoordinate, to: signal1.coordinate)
                     let distance2 = distance(from: centerCoordinate, to: signal2.coordinate)
                     return distance1 < distance2
                 }
-                .prefix(30)
-                .map { $0 }
+            
+            // If you don't even need them sorted, you can return allSignals directly:
+            // return allSignals
+            
         } catch {
             print("Error reading CSV file: \(error)")
             return []
         }
     }
     
-    // Helper function to calculate distance between coordinates
+    // Helper method to calculate distance between two coordinates
     private static func distance(from coord1: CLLocationCoordinate2D, to coord2: CLLocationCoordinate2D) -> CLLocationDistance {
         let location1 = CLLocation(latitude: coord1.latitude, longitude: coord1.longitude)
         let location2 = CLLocation(latitude: coord2.latitude, longitude: coord2.longitude)
         return location1.distance(from: location2)
     }
 }
+
