@@ -1,7 +1,8 @@
+private let amPmOptions = ["AM", "PM"]
 import SwiftUI
 import MapKit
 
-// MARK: - Supporting Types
+// Supporting Types and Models
 enum MapItemType {
     case place
     case signal
@@ -34,24 +35,51 @@ struct Place {
     let coordinate: CLLocationCoordinate2D
 }
 
-// Custom view for traffic signal markers with pop-up
 struct SignalAnnotationView: View {
-    let signalColor: Color = .green
     let signalId: Int
     let isSelected: Bool
     let onTap: () -> Void
+    let volume: Double?
+    
+    // Color thresholds for traffic volume
+    private func getSignalColor(_ volume: Double) -> Color {
+        switch volume {
+        case ..<20:
+            return .green
+        case 20..<40:
+            return .yellow
+        case 40..<60:
+            return .orange
+        default:
+            return .red
+        }
+    }
+    
+    private func getGlowOpacity(_ volume: Double) -> Double {
+        switch volume {
+        case ..<20:
+            return 0.2
+        case 20..<40:
+            return 0.3
+        case 40..<60:
+            return 0.4
+        default:
+            return 0.5
+        }
+    }
     
     var body: some View {
         Button(action: onTap) {
             ZStack {
                 // Outer glowing circle
                 Circle()
-                    .fill(signalColor.opacity(0.3))
+                    .fill(volume.map(getSignalColor) ?? .gray)
+                    .opacity(volume.map(getGlowOpacity) ?? 0.2)
                     .frame(width: 100, height: 100)
                 
                 // Inner circle
                 Circle()
-                    .fill(signalColor)
+                    .fill(volume.map(getSignalColor) ?? .gray)
                     .frame(width: 24, height: 24)
                 
                 // Center dot
@@ -61,14 +89,24 @@ struct SignalAnnotationView: View {
             }
         }
         .overlay(alignment: .top) {
-            if isSelected {
+            if isSelected || volume != nil {
                 VStack(spacing: 4) {
-                    Text("Signal ID")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                    Text("\(signalId)")
-                        .font(.caption.bold())
-                        .foregroundColor(.primary)
+                    if isSelected {
+                        Text("Signal ID")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                        Text("\(signalId)")
+                            .font(.caption.bold())
+                            .foregroundColor(.primary)
+                    }
+                    if let vol = volume {
+                        Text("Volume")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                        Text(String(format: "%.1f", vol))
+                            .font(.caption.bold())
+                            .foregroundColor(getSignalColor(vol))
+                    }
                 }
                 .padding(8)
                 .background(
@@ -83,7 +121,7 @@ struct SignalAnnotationView: View {
 }
 
 struct ContentView: View {
-    // MARK: - Properties
+    // Properties
     @State private var showTimePicker = false
     @State private var showDatePicker = false
     @State private var selectedTime = Date()
@@ -95,6 +133,7 @@ struct ContentView: View {
     @State private var showAlert = false
     @State private var alertMessage = ""
     @State private var alertTitle = ""
+    @State private var signalVolumes: [Int: Double] = [:]  // Store signal ID to volume mapping
     @State private var trafficSignals: [TrafficSignal] = []
     @State private var selectedSignalId: Int? = nil
     @State private var region = MKCoordinateRegion(
@@ -107,21 +146,45 @@ struct ContentView: View {
         Place(name: "Mercedes-Benz Stadium", coordinate: CLLocationCoordinate2D(latitude: 33.7553, longitude: -84.4006))
     ]
     
-    private let amPmOptions = ["AM", "PM"]
+    @State private var selectedYear = 2025
+    private let yearRange = 2020...2030
     
     // Initialize traffic signals
     init() {
-        _trafficSignals = State(initialValue: SignalDataModel.loadSignals())
+        do {
+            _trafficSignals = State(initialValue: try SignalDataModel.loadSignals())
+            print("Loaded traffic signals with IDs: \(try SignalDataModel.loadSignals().map { $0.id })")
+        } catch {
+            print("Error loading signals: \(error)")
+            _trafficSignals = State(initialValue: [])
+        }
     }
     
-    // Computed property for map annotations
     private var annotationItems: [MapAnnotationItem] {
+        print("\n--- Building Annotation Items ---")
+        print("Current signal volumes: \(signalVolumes.count) entries")
+        print("Available volume keys: \(signalVolumes.keys.sorted())")
+        
         let placeItems = markers.map { MapAnnotationItem(place: $0) }
-        let signalItems = trafficSignals.map { MapAnnotationItem(signal: $0) }
+        
+        let signalItems = trafficSignals
+            .filter { signal in
+                let hasVolume = signalVolumes[signal.id] != nil
+                print("Signal \(signal.id): \(hasVolume ? "has volume" : "no volume")")
+                return hasVolume
+            }
+            .map { signal in
+                print("Creating annotation for signal \(signal.id) with volume \(signalVolumes[signal.id] ?? 0)")
+                return MapAnnotationItem(signal: signal)
+            }
+        
+        print("Created \(signalItems.count) signal annotations")
+        print("---------------------------\n")
+        
         return placeItems + signalItems
     }
     
-    // MARK: - Time and Date Intervals
+    // Time and Date Intervals
     private let timeIntervals: [Date] = {
         let calendar = Calendar.current
         let currentDate = Date()
@@ -153,7 +216,7 @@ struct ContentView: View {
         return dates
     }()
     
-    // MARK: - Validation Methods
+    // Validation Methods
     private func validateTime(_ time: String) -> Bool {
         let timeRegex = #"^(1[0-2]|0?[1-9]):([0-5][0-9])$"#
         let timePredicate = NSPredicate(format: "SELF MATCHES %@", timeRegex)
@@ -166,7 +229,6 @@ struct ContentView: View {
         return datePredicate.evaluate(with: date)
     }
     
-    // MARK: - Network Request
     private func fetchPrediction() {
         guard validateTime(timeText) && validateDate(dateText) else {
             alertTitle = "Error"
@@ -178,29 +240,50 @@ struct ContentView: View {
         Task {
             isLoading = true
             do {
-                let response = try await PredictionNetworkService.shared.fetchPrediction(
-                    time: timeText,
-                    date: dateText,
-                    amPm: selectedAmPm,
-                    origin: markers[0].coordinate,
-                    destination: markers[1].coordinate
-                )
+                // Convert selected date and time to Date object
+                let dateFormatter = DateFormatter()
+                dateFormatter.dateFormat = "MM/dd hh:mm a yyyy"
+                let currentYear = Calendar.current.component(.year, from: Date())
+                guard let selectedDateTime = dateFormatter.date(from: "\(dateText) \(timeText) \(selectedAmPm) \(currentYear)") else {
+                    throw NetworkError.invalidResponse
+                }
                 
-                if response.status == "success" {
+                // Fetch predictions for the specific timestamp
+                let predictions = try await PredictionNetworkService.shared.fetchPrediction(for: selectedDateTime, year: selectedYear)
+                
+                // *** IMPORTANT PART: Store the predictions in `signalVolumes` ***
+                // so that the map can update with these volumes.
+                self.signalVolumes = predictions.reduce(into: [:]) { result, prediction in
+                    result[Int(prediction.signalId)] = prediction.predictedTotalVolume
+                }
+                
+                // Now that signalVolumes has data, SwiftUI will rebuild annotationItems,
+                // and you'll see the signals on the map.
+                
+                if !predictions.isEmpty {
                     alertTitle = "Success"
+                    let formattedPredictions = predictions
+                        .prefix(5)
+                        .map { prediction in
+                            "Signal ID: \(Int(prediction.signalId)), Predicted Volume: \(String(format: "%.2f", prediction.predictedTotalVolume))"
+                        }
+                        .joined(separator: "\n")
+                    
                     alertMessage = """
-                    Data processing completed
+                    Predictions received successfully
                     
                     Start Time: \(timeText) \(selectedAmPm)
-                    End Time: \(dateText)
-                    Interval: \(response.parameters.interval_minutes) minutes
+                    Date: \(dateText)
+                    
+                    Sample Results:
+                    \(formattedPredictions)
                     """
-                    showAlert = true
+                } else {
+                    alertTitle = "Warning"
+                    alertMessage = "No predictions found for the specified time."
                 }
-            } catch NetworkError.requestTimeout {
-                alertTitle = "Error"
-                alertMessage = "Request failed: The request timed out."
                 showAlert = true
+                
             } catch let error as NetworkError {
                 alertTitle = "Error"
                 alertMessage = error.errorDescription ?? "An unknown error occurred"
@@ -213,8 +296,9 @@ struct ContentView: View {
             isLoading = false
         }
     }
+
     
-    // MARK: - Body
+    // View Body
     var body: some View {
         GeometryReader { geometry in
             VStack(spacing: 0) {
@@ -244,7 +328,8 @@ struct ContentView: View {
                                     withAnimation(.easeInOut(duration: 0.2)) {
                                         selectedSignalId = signalId
                                     }
-                                }
+                                },
+                                volume: signalVolumes[signalId]
                             )
                         }
                     }
@@ -298,25 +383,41 @@ struct ContentView: View {
                                     TextField("Enter time (HH:MM)", text: $timeText)
                                         .keyboardType(.numberPad)
                                         .textFieldStyle(RoundedBorderTextFieldStyle())
-                                    
-                                    Menu {
-                                        ForEach(amPmOptions, id: \.self) { option in
-                                            Button(action: { selectedAmPm = option }) {
-                                                Text(option)
-                                            }
-                                        }
-                                    } label: {
-                                        Text(selectedAmPm)
-                                            .frame(width: 50)
-                                            .padding(.vertical, 8)
-                                            .background(Color(.systemGray6))
-                                            .cornerRadius(8)
+                                }
+                            }
+                            
+                            // AM/PM Selector
+                            Menu {
+                                ForEach(amPmOptions, id: \.self) { option in
+                                    Button(action: { selectedAmPm = option }) {
+                                        Text(option)
                                     }
                                 }
-                                .padding()
-                                .background(Color(.systemBackground))
+                            } label: {
+                                Text(selectedAmPm)
+                                    .frame(width: 50)
+                                    .padding(.vertical, 8)
+                                    .background(Color(.systemGray6))
+                                    .cornerRadius(8)
+                            }
+                            
+                            // Year Selector
+                            Menu {
+                                ForEach(Array(yearRange), id: \.self) { year in
+                                    Button(action: { selectedYear = year }) {
+                                        Text(String(year))
+                                    }
+                                }
+                            } label: {
+                                Text(String(selectedYear))
+                                    .frame(width: 70)
+                                    .padding(.vertical, 8)
+                                    .background(Color(.systemGray6))
+                                    .cornerRadius(8)
                             }
                         }
+                        .padding()
+                        .background(Color(.systemBackground))
                         
                         // Date Selection
                         HStack {
@@ -411,7 +512,7 @@ struct ContentView: View {
         }
     }
     
-    // MARK: - Formatters
+    // Formatters
     private var timeFormatter: DateFormatter {
         let formatter = DateFormatter()
         formatter.timeStyle = .short
@@ -425,7 +526,17 @@ struct ContentView: View {
     }
 }
 
-// MARK: - Preview Provider
+// DateFormatter Extension
+extension DateFormatter {
+    static let iso8601Full: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
+        formatter.timeZone = TimeZone(identifier: "UTC")
+        return formatter
+    }()
+}
+
+// Preview Provider
 struct ContentView_Previews: PreviewProvider {
     static var previews: some View {
         ContentView()
